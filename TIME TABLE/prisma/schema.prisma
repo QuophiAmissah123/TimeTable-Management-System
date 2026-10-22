@@ -1,0 +1,250 @@
+// College Academic Timetable System
+// Prisma Schema Definition
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite" // Can be switched to "postgresql" via env or migration
+  url      = env("DATABASE_URL")
+}
+
+// -------------------------------------------------------------
+// USER & ROLE-BASED ACCESS
+// -------------------------------------------------------------
+model User {
+  id           String             @id @default(cuid())
+  email        String             @unique
+  passwordHash String
+  fullName     String
+  role         String             @default("ADMIN") // ADMIN | VIEWER
+  isActive     Boolean            @default(true)
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+
+  publishedVersions TimetableVersion[] @relation("PublishedBy")
+  auditLogs         AuditLog[]
+  startedSessions   TeachingSession[]  @relation("StartedSessions")
+  endedSessions     TeachingSession[]  @relation("EndedSessions")
+
+  @@index([email])
+}
+
+// -------------------------------------------------------------
+// ACADEMIC PERIOD MANAGEMENT
+// Explicit academic year and semester - no hardcoded calendar years
+// -------------------------------------------------------------
+model AcademicPeriod {
+  id           String      @id @default(cuid())
+  academicYear String      // e.g. "2025/2026"
+  semester     String      // e.g. "Semester 1"
+  startDate    DateTime?
+  endDate      DateTime?
+  isCurrent    Boolean     @default(false)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  timetables   Timetable[]
+
+  @@unique([academicYear, semester])
+  @@index([isCurrent])
+}
+
+// -------------------------------------------------------------
+// PROGRAMME & LEVELS MANAGEMENT
+// -------------------------------------------------------------
+model Programme {
+  id          String           @id @default(cuid())
+  code        String           @unique // e.g. "BSC-CS"
+  name        String           // e.g. "BSc Computer Science"
+  description String?
+  isActive    Boolean          @default(true)
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  levels      ProgrammeLevel[]
+  timetables  Timetable[]
+
+  @@index([code])
+}
+
+model ProgrammeLevel {
+  id          String      @id @default(cuid())
+  programmeId String
+  levelCode   String      // e.g. "100", "200", "300", "400"
+  levelName   String      // e.g. "Level 100 / Year 1"
+  sortOrder   Int         @default(1)
+  isActive    Boolean     @default(true)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  programme   Programme   @relation(fields: [programmeId], references: [id], onDelete: Cascade)
+  timetables  Timetable[]
+
+  @@unique([programmeId, levelCode])
+  @@index([programmeId])
+}
+
+// -------------------------------------------------------------
+// COURSE MANAGEMENT
+// -------------------------------------------------------------
+model Course {
+  id          String           @id @default(cuid())
+  code        String           @unique // e.g. "CS101"
+  name        String           // e.g. "Introduction to Programming"
+  creditHours Int              @default(3)
+  description String?
+  isActive    Boolean          @default(true)
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  entries     TimetableEntry[]
+
+  @@index([code])
+}
+
+// -------------------------------------------------------------
+// FACILITATOR MANAGEMENT
+// -------------------------------------------------------------
+model Facilitator {
+  id         String           @id @default(cuid())
+  name       String           // e.g. "Dr. Kwame Mensah"
+  email      String?
+  phone      String?
+  department String?
+  isActive   Boolean          @default(true)
+  createdAt  DateTime         @default(now())
+  updatedAt  DateTime         @updatedAt
+
+  entries    TimetableEntry[]
+
+  @@index([name])
+}
+
+// -------------------------------------------------------------
+// TIMETABLE & VERSIONING ARCHITECTURE
+// Immutability: Published versions are frozen; edits fork a new draft
+// -------------------------------------------------------------
+model Timetable {
+  id                        String             @id @default(cuid())
+  programmeId               String
+  programmeLevelId          String
+  academicPeriodId          String
+  status                    String             @default("DRAFT") // DRAFT | PUBLISHED
+  currentPublishedVersionId String?
+  createdAt                 DateTime           @default(now())
+  updatedAt                 DateTime           @updatedAt
+
+  programme                 Programme          @relation(fields: [programmeId], references: [id], onDelete: Cascade)
+  programmeLevel            ProgrammeLevel     @relation(fields: [programmeLevelId], references: [id], onDelete: Cascade)
+  academicPeriod            AcademicPeriod     @relation(fields: [academicPeriodId], references: [id], onDelete: Cascade)
+  versions                  TimetableVersion[]
+  auditLogs                 AuditLog[]
+
+  @@unique([programmeId, programmeLevelId, academicPeriodId])
+  @@index([academicPeriodId])
+  @@index([status])
+}
+
+model TimetableVersion {
+  id            String           @id @default(cuid())
+  timetableId   String
+  versionNumber Int              @default(1)
+  status        String           @default("DRAFT") // DRAFT | VALIDATED | PUBLISHED | SUPERSEDED
+  notes         String?
+  publishedAt   DateTime?
+  publishedById String?
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+
+  scheduledPublishAt DateTime?     // When to auto-activate (publish) this version
+  scheduledById      String?       // Who scheduled the auto-activation
+
+  timetable     Timetable        @relation(fields: [timetableId], references: [id], onDelete: Cascade)
+  publishedBy   User?            @relation("PublishedBy", fields: [publishedById], references: [id], onDelete: SetNull)
+  entries       TimetableEntry[]
+
+  @@unique([timetableId, versionNumber])
+  @@index([timetableId])
+  @@index([status])
+  @@index([scheduledPublishAt])
+}
+
+model TimetableEntry {
+  id                 String           @id @default(cuid())
+  timetableVersionId String
+  courseId           String
+  facilitatorId      String
+  dayOfWeek          String           // "MONDAY" | "TUESDAY" | "WEDNESDAY" | "THURSDAY" | "FRIDAY" | "SATURDAY" | "SUNDAY"
+  startTime          String           // "08:00" (HH:mm format)
+  endTime            String           // "10:00" (HH:mm format)
+  venue              String           // e.g. "LH 101" or "Main Auditorium"
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+
+  timetableVersion   TimetableVersion  @relation(fields: [timetableVersionId], references: [id], onDelete: Cascade)
+  course             Course            @relation(fields: [courseId], references: [id], onDelete: Restrict)
+  facilitator        Facilitator       @relation(fields: [facilitatorId], references: [id], onDelete: Restrict)
+  teachingSessions   TeachingSession[]
+
+  @@index([timetableVersionId])
+  @@index([courseId])
+  @@index([facilitatorId])
+  @@index([dayOfWeek, startTime, endTime])
+  @@index([venue])
+}
+
+// -------------------------------------------------------------
+// AUDIT LOGGING
+// -------------------------------------------------------------
+model AuditLog {
+  id          String     @id @default(cuid())
+  userId      String?
+  timetableId String?
+  action      String     // e.g. "CREATE_TIMETABLE", "PUBLISH_VERSION", "VALIDATE", "UPDATE_ENTRY"
+  entityType  String     // "TIMETABLE" | "VERSION" | "ENTRY" | "COURSE" | "FACILITATOR"
+  entityId    String
+  details     String?    // JSON serialized metadata or description
+  createdAt   DateTime   @default(now())
+
+  user        User?      @relation(fields: [userId], references: [id], onDelete: SetNull)
+  timetable   Timetable? @relation(fields: [timetableId], references: [id], onDelete: Cascade)
+
+  @@index([entityType, entityId])
+  @@index([createdAt])
+}
+
+// -------------------------------------------------------------
+// TEACHING SESSION & ATTENDANCE TRACKING
+// Actual occurrence of a scheduled class session
+// -------------------------------------------------------------
+model TeachingSession {
+  id               String          @id @default(cuid())
+  timetableEntryId String
+  sessionDate      String          // "YYYY-MM-DD" e.g. "2026-10-15"
+  status           String          @default("IN_PROGRESS") // IN_PROGRESS | COMPLETED | REQUIRES_REVIEW | CANCELLED
+  startedAt        DateTime        @default(now()) // UTC instant
+  startedById      String
+  endedAt          DateTime?       // UTC instant
+  endedById        String?
+  durationSeconds  Int?            // Calculated duration in seconds
+  lecturerPresent  Boolean         @default(true) // Recorded presence by operator
+  facilitatorPresent String?       // Actual facilitator/lecturer present for this session (typed or selected)
+  flaggedForReview Boolean         @default(false)
+  reviewReason     String?
+  studentsPresent  Int?            // Manually recorded headcount of students present
+  studentsEnrolled Int?            // Total registered or expected students
+  notes            String?
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+
+  timetableEntry   TimetableEntry  @relation(fields: [timetableEntryId], references: [id], onDelete: Restrict)
+  startedBy        User            @relation("StartedSessions", fields: [startedById], references: [id], onDelete: Restrict)
+  endedBy          User?           @relation("EndedSessions", fields: [endedById], references: [id], onDelete: SetNull)
+
+  @@index([timetableEntryId])
+  @@index([sessionDate])
+  @@index([status])
+  @@index([startedById])
+}
